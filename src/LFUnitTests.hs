@@ -25,7 +25,14 @@ theorem_plus0 :: Term
 theorem_plus0 = (reduce $ (App (forceParse
   "\\plus:N->N->N. forall x : N. plus x 0 = x") addition))
 
---proof_plus0 :: Term
+proof_plus0 :: Term
+proof_plus0 = reduce $
+  (App
+    (forceParse $
+        "\\plus:N->N->N. \\x:N. natElim (\\n:N. plus n 0 = n) (refl 0) " ++
+          "(\\n:N.\\H:(plus n 0 = n). eqElim (\\x:N. S (plus n 0) = S x) (plus n 0) "
+            ++ "(refl (S (plus n 0))) n H) x")
+    addition)
 
 test_parse1 =
   testCase "parse \"\\x : N. x\"" $ assertEqual []
@@ -67,10 +74,14 @@ test_proof1 =
   testCase "proof of symmetry of equality" $ assertEqual []
     theorem_eqSym (fromSuccess $ check proof_eqSym)
 
+test_proof2 =
+  testCase "proof that x + 0 = x" $ assertEqual []
+    theorem_plus0 (fromSuccess $ check proof_plus0)
+
 unitTests =
   testGroup
     "Logical Framework Lambda Calculus -- Unit Tests"
     [test_parse1, test_parse2, test_parse3,
      test_check1,
      test_reduce1, test_reduce2, test_reduce3,
-     test_proof1]
+     test_proof1, test_proof2]

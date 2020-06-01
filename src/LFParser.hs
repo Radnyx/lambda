@@ -15,12 +15,26 @@
 module LFParser (doParse) where
 
 import Text.ParserCombinators.Parsec
+import Data.Maybe
 import Control.Monad
 import qualified Data.Map.Strict as M
 import qualified Data.Set as S
 import LF
 
-type Bindings = M.Map String Int
+-- head of list is latest binding, shadows rest
+type Bindings = (M.Map String [Int], Int)
+
+bind :: String -> Bindings -> Bindings
+bind name (ctx, depth) =
+  if M.member name ctx
+  then (M.insert name (depth : fromJust (M.lookup name ctx)) ctx, depth + 1)
+  else (M.insert name [depth] ctx, depth + 1)
+
+get :: String -> Bindings -> Maybe Int
+get name (ctx, _) = do
+  xs <- M.lookup name ctx
+  guard $ not (null xs)
+  return $ head xs
 
 {- Reserved identifiers, these cannot be bound. -}
 reserved :: S.Set String
@@ -47,29 +61,27 @@ parseAppOrAxiom ctx =
 
 {- Pi or Lambda abstractions. -}
 abstract :: String -> (Term -> Term -> Term) -> Bindings -> Parser Term
-abstract str f ctx = do
+abstract str f b = do
   _ <- try $ string str
   skipwhite
   name <- ident <|> string "_"
   guard $ not (S.member name reserved)
   skipwhite
   _ <- char ':'
-  t1 <- try (parseArrow ctx) <|> try (parseEqual ctx) <|> parseSimple ctx
+  t1 <- try (parseArrow b) <|> try (parseEqual b) <|> parseSimple b
   skipwhite
   _ <- char '.'
-  let ctx' = M.insert name (M.size ctx) ctx
-  f t1 <$> parseTerm ctx'
+  f t1 <$> parseTerm (bind name b)
 
 parseLam = abstract "\\" Lam
 parsePi  = abstract "forall" Pi
 
 parseVar :: Bindings -> Parser Term
-parseVar ctx = do
+parseVar b@(_, depth) = do
   name <- ident
   guard $ not (S.member name reserved)
-  guard (M.member name ctx)
-  case M.lookup name ctx of
-    Just i -> return $ Var (M.size ctx - i - 1)
+  case get name b of
+    Just i -> return $ Var (depth - i - 1)
     Nothing -> unexpected $ "Name \"" ++ name ++ "\" is not bound."
 
 parseNum :: Bindings -> Parser Term
@@ -126,8 +138,7 @@ parseArrow ctx = do
   t1 <- parseArrowArgL ctx
   skipwhite
   _ <- try $ string "->"
-  let ctx' = M.insert "_" (M.size ctx) ctx
-  Pi t1 <$> parseArrowArgR ctx'
+  Pi t1 <$> parseArrowArgR (bind "_" ctx)
 
 {- Parse most general terms and structures. -}
 parseTerm :: Bindings -> Parser Term
@@ -140,4 +151,4 @@ parseSimple ctx = skipwhite >> choice (($ ctx) <$>
   [ parseParen, parseSucc, parseNum, parseNat, parseRefl, parseVar ])
 
 doParse :: String -> Either ParseError Term
-doParse = parse (parseTerm M.empty) ""
+doParse = parse (parseTerm (M.empty, 0)) ""

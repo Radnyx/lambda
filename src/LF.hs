@@ -60,8 +60,12 @@
 module LF (Term(..), check, reduce, fromSuccess) where
 
 import qualified Data.Vector as V
+import Data.Char
+import Data.List
 import Control.Monad
 import Control.Applicative
+
+
 
 type Context = V.Vector Term
 
@@ -78,9 +82,41 @@ data Term =
  | Refl
  | EqElim Term Term Term Term Term
  | Univ
- deriving (Eq, Show, Ord)
+ deriving (Eq, Ord)
 
-{- TODO: show Terms, write "->" if var is free in type! -}
+{- TODO:
+   - show "->" when free in type.
+   - Sequences of App should omit parenthesis
+   - remember parsed varible names as Maybe String in Var,
+     obviously ignored during substitution
+-}
+instance Show Term where
+  show = aux 0 where
+    -- Generate a variable name given the index/depth.
+    name :: Int -> Char -> String
+    name i c = [ chr (i + ord c) ]
+
+    -- surround non-simple terms with parenthesis
+    paren :: Int -> Term -> String
+    paren k a@(App _ _) = "(" ++ aux k a ++ ")"
+    paren k a@(Lam _ _) = "(" ++ aux k a ++ ")"
+    paren k a@(Pi _ _)  = "(" ++ aux k a ++ ")"
+    paren k t = aux k t
+
+    aux k (Var i) = name (k - i - 1) 'a'
+    aux k (App t1 t2) = paren k t1 ++ " " ++ paren k t2
+    aux k (Lam a t) = "\\" ++ name k 'a' ++ " : " ++ paren k a ++ ". " ++ aux (k + 1) t
+    aux k (Pi a t) = "forall " ++ name k 'a' ++ " : " ++ paren k a ++ ". " ++ aux (k + 1) t
+    aux k (NatElim p p0 pS n) =
+      unwords ["natElim", paren k p, paren k p0, paren k pS, paren k n]
+    aux k (EqElim p x px y xy) =
+      unwords ["eqElim", paren k p, paren k x, paren k px, paren k y, paren k xy]
+    aux k (Equal a b) = aux k a ++ " = " ++ aux k b
+    aux _ Nat = "N"
+    aux _ Zero = "0"
+    aux _ Succ = "S"
+    aux _ Refl = "refl"
+    aux _ Univ = "*"
 
 data Check a = Success a | Failure String deriving (Show, Functor)
 
@@ -128,12 +164,12 @@ tryEqual x y t msg = case t of
   _ -> Failure msg
 
 {- Term is application of function type. -}
-tryFun :: Term -> Term -> Check Term
-tryFun xt (Pi a b) =
+tryFun :: Term -> Term -> Term -> Check Term
+tryFun f xt (Pi a b) =
   if a == xt
   then return b
-  else Failure $ "Argument must be " ++ show a ++ ", got " ++ show a ++ "."
-tryFun _ ft = Failure $ "Function type must be Pi, got " ++ show ft
+  else Failure $ "Argument to " ++ show f ++ " must be " ++ show xt ++ ", got " ++ show a ++ "."
+tryFun f _ ft = Failure $ "Function " ++ show f ++ " type must be Pi, got " ++ show ft ++ "."
 
 
 {- Type-check an explicitly typed term, a.k.a check a proof.
@@ -146,7 +182,7 @@ check = aux V.empty where
     (App f x) -> do
       ft <- aux ctx f
       xt <- aux ctx x
-      result <- tryFun xt ft
+      result <- tryFun f xt ft
       return $ reduce (subst x result) -- subsitute in dependent type
     (Lam Univ _) -> Failure "This is a first order theory, cannot quantify over types."
     (Lam t1 t2) -> Pi t1 <$> aux (V.cons t1 ctx) t2
@@ -160,13 +196,15 @@ check = aux V.empty where
       nt <- aux ctx n ; tryNat nt $ "Expected Nat as last argument to NatElim, got " ++ show nt ++ "."
       pt <- aux ctx p ; tryMotive pt "NatElim"
       p0t <- aux ctx p0
-      guardMsg (p0t == reduce (App p Zero)) $ "Expected proof of NatElim motive applied to zero, got " ++ show p0t ++ "."
-      pSt <- aux ctx pS
+      let expectP0 = reduce (App p Zero)
+      guardMsg (p0t == expectP0) $ "natElim base case should prove " ++ show expectP0 ++ ", got " ++ show p0t ++ "."
+      pSt <- reduce <$> aux ctx pS
       --let ctx' = V.cons Nat ctx -- bind variable from inductive step
       let ih = reduce (App p (Var 0)) -- type of inductive hypothesis
       --let ctx'' = V.cons ih ctx' -- bind I.H.
       let indRes = reduce (App p (App Succ (Var 1))) -- result of inductive step
-      guardMsg (pSt == Pi Nat (Pi ih indRes)) ""
+      let expectPS = Pi Nat (Pi ih indRes)
+      guardMsg (pSt == expectPS) $ "NatElim inductive step should prove " ++ show expectPS ++ ", got " ++ show pSt ++ "."
       return $ reduce (App p n)
     Equal a b -> do
       at <- aux ctx a ; tryNat at $ "LHS of `=` must be Nat, got " ++ show at ++ "."
@@ -177,7 +215,7 @@ check = aux V.empty where
       xt <- aux ctx x ; tryNat xt $ "Second arg of EqElim must be Nat, got " ++ show xt ++ "."
       yt <- aux ctx y ; tryNat yt $ "Fourth arg of EqElim must be Nat, got " ++ show yt ++ "."
       pt <- aux ctx p ; tryMotive pt "EqElim"
-      xyt <- aux ctx xy
+      xyt <- reduce <$> aux ctx xy
       tryEqual x y xyt -- has type x = y
         $ "Final argument to EqElim must have type " ++ show x ++ " = " ++ show y ++ ", got " ++ show xyt ++ "."
       pxt <- aux ctx px
@@ -204,6 +242,7 @@ reduce (NatElim p p0 pS n) =
       App Succ m -> reduce $ App (App pS m) (reduce $ NatElim p' p0' pS' m)
       _ -> NatElim p' p0' pS' n'
 reduce (EqElim p x px y xy) = EqElim (reduce p) (reduce x) (reduce px) (reduce y) (reduce xy)
+reduce (Equal a b) = Equal (reduce a) (reduce b)
 reduce t = t
 
 {- Map over variables of a term
@@ -212,8 +251,8 @@ mapv :: (Int -> Int -> Term) -> (Int -> Int -> Term) -> Term -> Term
 mapv f g = aux 0 where
   aux d = \case
     (App t1 t2) -> App (aux d t1) (aux d t2)
-    (Lam a t') -> Lam a (aux (d + 1) t')
-    (Pi a t') -> Pi a (aux (d + 1) t')
+    (Lam a t) -> Lam (aux d a) (aux (d + 1) t)
+    (Pi a t) -> Pi (aux d a) (aux (d + 1) t)
     v@(Var i)
       | d  < i -> f d i
       | d == i -> g d i
