@@ -55,9 +55,9 @@
 	    "*" (kind) is untypable ??
 -}
 
-{-# LANGUAGE LambdaCase, BlockArguments #-}
+{-# LANGUAGE LambdaCase, BlockArguments, DeriveFunctor #-}
 
-module LF (Term(..), check, reduce) where
+module LF (Term(..), check, reduce, fromSuccess) where
 
 import qualified Data.Vector as V
 import Control.Monad
@@ -75,87 +75,116 @@ data Term =
  | Succ
  | NatElim Term Term Term Term
  | Equal Term Term
- | Refl Term
+ | Refl
  | EqElim Term Term Term Term Term
  | Univ
  deriving (Eq, Show, Ord)
 
 {- TODO: show Terms, write "->" if var is free in type! -}
 
+data Check a = Success a | Failure String deriving (Show, Functor)
+
+instance Applicative Check where
+  Success f <*> a = f <$> a
+  Failure s <*> _ = Failure s
+  pure = Success
+instance Monad Check where
+  Success a >>= f = f a
+  Failure s >>= _ = Failure s
+
+guardMsg :: Bool -> String -> Check ()
+guardMsg True _ = Success ()
+guardMsg False msg = Failure msg
+
+fromSuccess :: Check a -> a
+fromSuccess (Success a) = a
+fromSuccess (Failure s) = error s
 
 
 {- Term is ℕ. -}
-tryNat :: Alternative f => Term -> f ()
-tryNat = \case { Nat -> pure () ; _ -> empty }
+tryNat :: Term -> String -> Check ()
+tryNat Nat _ = return ()
+tryNat _ msg = Failure msg
 
 {- Term is Πx:A.B. -}
-tryPi :: Alternative f => Term -> f (Term, Term)
-tryPi = \case { Pi t1 t2 -> pure (t1, t2) ; _ -> empty }
+tryPi :: Term -> String -> Check (Term, Term)
+tryPi (Pi t1 t2) _ = return (t1, t2)
+tryPi _ msg = Failure msg
 
-{- Term is Πx:ℕ.*. -}
-tryMotive :: MonadPlus m => Term -> m ()
-tryMotive t = do
-  (t1, t2) <- tryPi t ; tryNat t1 ; guard (t2 == Univ)
-  return ()
+{- Term is Πx:ℕ.*.
+   `msg` is name of eliminator ("NatElim" or "EqElim"). -}
+tryMotive :: Term -> String -> Check ()
+tryMotive t msg = do
+  (t1, t2) <- tryPi t $ msg ++ " motive " ++ show t ++ " be a function, got " ++ show t ++ "."
+  tryNat t1 $ msg ++ " motive " ++ show t ++ " argument must be Nat, got " ++ show t1 ++ "."
+  case t2 of
+    Univ -> return ()
+    _ -> Failure $ msg ++ " motive " ++ show t ++ " must return a type, got " ++ show t1 ++ "."
 
 {- Term is x = y. -}
-tryEqual :: Alternative m => Term -> Term -> Term -> m ()
-tryEqual x y = \case
-  Equal x' y' -> guard (x == x' && y == y')
-  _ -> empty
+tryEqual :: Term -> Term -> Term -> String -> Check ()
+tryEqual x y t msg = case t of
+  Equal x' y' -> guardMsg (x == x' && y == y') msg
+  _ -> Failure msg
 
 {- Term is application of function type. -}
-tryFun :: MonadPlus m => Term -> Term -> m Term
-tryFun xt = \case
-  Pi a b -> guard (a == xt) >> return b
-  _ -> empty
+tryFun :: Term -> Term -> Check Term
+tryFun xt (Pi a b) =
+  if a == xt
+  then return b
+  else Failure $ "Argument must be " ++ show a ++ ", got " ++ show a ++ "."
+tryFun _ ft = Failure $ "Function type must be Pi, got " ++ show ft
 
 
 {- Type-check an explicitly typed term, a.k.a check a proof.
    Note that type-checking NatElim and EqElim will
    call reduce on applications to the motive. -}
-check :: Term -> Maybe Term
+check :: Term -> Check Term
 check = aux V.empty where
-  aux :: Context -> Term -> Maybe Term
+  aux :: Context -> Term -> Check Term
   aux ctx = \case
     (App f x) -> do
       ft <- aux ctx f
       xt <- aux ctx x
-      tryFun xt ft
-    (Lam Univ _) -> Nothing -- first order theory
+      result <- tryFun xt ft
+      return $ reduce (subst x result) -- subsitute in dependent type
+    (Lam Univ _) -> Failure "This is a first order theory, cannot quantify over types."
     (Lam t1 t2) -> Pi t1 <$> aux (V.cons t1 ctx) t2
-    (Pi Univ _) -> Nothing -- first order theory
+    (Pi Univ _) -> Failure "This is a first order theory, cannot quantify over types."
     (Pi t1 t2) -> aux (V.cons t1 ctx) t2 -- Γ,B : U |- Πx:A.B : U
-    Var i -> return $ ctx V.! i
+    Var i -> return $ addfree (i + 1) (ctx V.! i) -- update indices in dependent types!
     Nat -> return Univ
     Zero -> return Nat
     Succ -> return $ Pi Nat Nat
     NatElim p p0 pS n -> do
-      nt <- aux ctx n ; tryNat nt
-      pt <- aux ctx p ; tryMotive pt
+      nt <- aux ctx n ; tryNat nt $ "Expected Nat as last argument to NatElim, got " ++ show nt ++ "."
+      pt <- aux ctx p ; tryMotive pt "NatElim"
       p0t <- aux ctx p0
-      guard (p0t == reduce (App p Zero)) -- actually has type P 0
+      guardMsg (p0t == reduce (App p Zero)) $ "Expected proof of NatElim motive applied to zero, got " ++ show p0t ++ "."
       pSt <- aux ctx pS
       --let ctx' = V.cons Nat ctx -- bind variable from inductive step
       let ih = reduce (App p (Var 0)) -- type of inductive hypothesis
       --let ctx'' = V.cons ih ctx' -- bind I.H.
       let indRes = reduce (App p (App Succ (Var 1))) -- result of inductive step
-      guard (pSt == Pi Nat (Pi ih indRes))
+      guardMsg (pSt == Pi Nat (Pi ih indRes)) ""
       return $ reduce (App p n)
     Equal a b -> do
-      at <- aux ctx a ; tryNat at
-      bt <- aux ctx b ; tryNat bt
+      at <- aux ctx a ; tryNat at $ "LHS of `=` must be Nat, got " ++ show at ++ "."
+      bt <- aux ctx b ; tryNat bt $ "RHS of `=` must be Nat, got " ++ show bt ++ "."
       return Univ -- Γ, a : ℕ, b : ℕ |- a = b : *
-    Refl -> return $ Pi Nat (Equal (Var 0) (Var 0)) do
+    Refl -> return $ Pi Nat (Equal (Var 0) (Var 0))
     EqElim p x px y xy -> do
-      xt <- aux ctx x ; tryNat xt
-      yt <- aux ctx y ; tryNat yt
-      pt <- aux ctx p ; tryMotive pt
-      xyt <- aux ctx xy ; tryEqual x y xyt -- has type x = y
+      xt <- aux ctx x ; tryNat xt $ "Second arg of EqElim must be Nat, got " ++ show xt ++ "."
+      yt <- aux ctx y ; tryNat yt $ "Fourth arg of EqElim must be Nat, got " ++ show yt ++ "."
+      pt <- aux ctx p ; tryMotive pt "EqElim"
+      xyt <- aux ctx xy
+      tryEqual x y xyt -- has type x = y
+        $ "Final argument to EqElim must have type " ++ show x ++ " = " ++ show y ++ ", got " ++ show xyt ++ "."
       pxt <- aux ctx px
-      guard (pxt == reduce (App p x)) -- actually has type P x
+      let expectPx = reduce (App p x) -- actually has type P x
+      guardMsg (pxt == expectPx) $ "Expected proof of EqElim motive " ++ show expectPx ++ ", got " ++ show pxt ++ "."
       return $ reduce (App p y)
-    Univ -> Nothing -- only one Martin Löf universe, untypable
+    Univ -> Failure "This is a first order theory, universe has no type."
 
 {- Reduce term to normal form. -}
 reduce :: Term -> Term
@@ -191,7 +220,6 @@ mapv f g = aux 0 where
       | otherwise -> v
     (NatElim p p0 pS n) -> NatElim (aux d p) (aux d p0) (aux d pS) (aux d n)
     (Equal a b) -> Equal (aux d a) (aux d b)
-    (Refl a) -> Refl (aux d a)
     (EqElim p x px y xy) -> EqElim (aux d p) (aux d x) (aux d px) (aux d y) (aux d xy)
     t' -> t'
 

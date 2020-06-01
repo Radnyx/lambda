@@ -43,7 +43,7 @@ parseApp ctx = -- left associative
 {- Since the axioms behave like application, treat these as so. -}
 parseAppOrAxiom :: Bindings -> Parser Term
 parseAppOrAxiom ctx =
-  choice (($ ctx) <$> [ parseRefl, parseNatElim, parseEqElim, parseApp ])
+  choice (($ ctx) <$> [ parseNatElim, parseEqElim, parseApp ])
 
 {- Pi or Lambda abstractions. -}
 abstract :: String -> (Term -> Term -> Term) -> Bindings -> Parser Term
@@ -54,7 +54,7 @@ abstract str f ctx = do
   guard $ not (S.member name reserved)
   skipwhite
   _ <- char ':'
-  t1 <- try (parseArrow ctx) <|> parseSimple ctx
+  t1 <- try (parseArrow ctx) <|> try (parseEqual ctx) <|> parseSimple ctx
   skipwhite
   _ <- char '.'
   let ctx' = M.insert name (M.size ctx) ctx
@@ -72,14 +72,15 @@ parseVar ctx = do
     Just i -> return $ Var (M.size ctx - i - 1)
     Nothing -> unexpected $ "Name \"" ++ name ++ "\" is not bound."
 
-parseNat  _ = try $ string "N" >> return Nat
-parseNum _ =
-  return $ toNat (read <$> many1 digit) where
+parseNum :: Bindings -> Parser Term
+parseNum _ = do
+  num <- many1 digit
+  return $ toNat (read num :: Integer) where
     toNat 0 = Zero
     toNat n = App Succ (toNat (n - 1))
-
+parseNat  _ = try $ string "N" >> return Nat
 parseSucc _ = try $ string "S" >> return Succ
-parseUniv _ = try $ string "*" >> return Univ
+parseRefl _ = try $ string "refl" >> return Refl
 
 {- NetElim actually forces the application of all of its arguments! -}
 parseNatElim :: Bindings -> Parser Term
@@ -98,11 +99,6 @@ parseEqual ctx = do
   skipwhite
   _ <- char '='
   Equal t1 <$> parseEqualArg ctx
-
-parseRefl :: Bindings -> Parser Term
-parseRefl ctx = do
-  _ <- try $ string "refl"
-  Refl <$> parseTerm ctx
 
 parseEqElim :: Bindings -> Parser Term
 parseEqElim ctx =
@@ -141,7 +137,7 @@ parseTerm ctx = skipwhite >> choice ((\f -> try $ f ctx) <$>
 {- Most basic terms, recursion provided by parenthesis grouping. -}
 parseSimple :: Bindings -> Parser Term
 parseSimple ctx = skipwhite >> choice (($ ctx) <$>
-  [ parseParen, parseSucc, parseNum, parseNat, parseUniv, parseVar ])
+  [ parseParen, parseSucc, parseNum, parseNat, parseRefl, parseVar ])
 
 doParse :: String -> Either ParseError Term
 doParse = parse (parseTerm M.empty) ""
