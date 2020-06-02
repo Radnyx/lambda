@@ -1,3 +1,12 @@
+{-
+  TODO:
+  - test proof of associativity of addition (should be easy)
+  - test proof of distributivity of multiplication (annoying algebra ...)
+  - test ackermann's function (compute modest values)
+  - forall a b c, a < b -> b < c -> a < c where
+  	lt x y := forall z, y + z = x -> False
+-}
+
 module LFUnitTests (unitTests) where
 
 import Test.Tasty (testGroup)
@@ -29,9 +38,23 @@ proof_plus0 :: Term
 proof_plus0 = reduce $
   (App
     (forceParse $
-        "\\plus:N->N->N. \\x:N. natElim (\\n:N. plus n 0 = n) (refl 0) " ++
-          "(\\n:N.\\H:(plus n 0 = n). eqElim (\\x:N. S (plus n 0) = S x) (plus n 0) "
-            ++ "(refl (S (plus n 0))) n H) x")
+      "\\plus:N->N->N. \\x:N. natElim (\\n:N. plus n 0 = n) (refl 0) " ++
+        "(\\n:N.\\H:(plus n 0 = n). eqElim (\\x:N. S (plus n 0) = S x) (plus n 0) " ++
+          "(refl (S (plus n 0))) n H) x")
+    addition)
+
+theorem_plusSucc :: Term
+theorem_plusSucc = (reduce $ (App (forceParse
+  "\\plus:N->N->N. forall x : N. forall y : N. plus x (S y) = S (plus x y)") addition))
+
+proof_plusSucc :: Term
+proof_plusSucc = reduce $
+  (App
+    (forceParse $
+      "\\plus:N->N->N. \\x:N.\\y:N. natElim (\\n:N. plus n (S y) = S (plus n y)) " ++
+        " (refl (S y)) (\\n:N.\\H:(plus n (S y) = S (plus n y)). eqElim " ++
+          "(\\m:N. S (plus n (S y)) = S m) (plus n (S y)) (refl (S (plus n (S y)))) " ++
+            "(S (plus n y)) H) x")
     addition)
 
 test_parse1 =
@@ -57,26 +80,26 @@ test_reduce1 =
 
 test_reduce2 =
   testCase "2 + 4 == 4 + 2" $ assertEqual []
-    (reduce $ (App (forceParse "\\plus : N -> N -> N. plus 2 4") addition))
-    (reduce $ (App (forceParse "\\plus : N -> N -> N. plus 4 2") addition))
+    (reduce $ App (forceParse "\\plus : N -> N -> N. plus 2 4") addition)
+    (reduce $ App (forceParse "\\plus : N -> N -> N. plus 4 2") addition)
 
 test_reduce3 =
   testCase "5 + 3 == 8" $ assertEqual []
     (forceParse "8")
-    (reduce $ (App (forceParse "\\plus : N -> N -> N. plus 5 3") addition))
+    (reduce $ App (forceParse "\\plus : N -> N -> N. plus 5 3") addition)
 
 test_check1 =
   testCase "type-check addition" $ assertEqual []
     (forceParse "N -> N -> N")
     (fromSuccess $ check addition)
 
-test_proof1 =
-  testCase "proof of symmetry of equality" $ assertEqual []
-    theorem_eqSym (fromSuccess $ check proof_eqSym)
+test_proof msg th prf = testCase msg $ assertEqual [] th (fromSuccess $ check prf)
 
-test_proof2 =
-  testCase "proof that x + 0 = x" $ assertEqual []
-    theorem_plus0 (fromSuccess $ check proof_plus0)
+test_proof1 = test_proof "proof of symmetry of equality" theorem_eqSym proof_eqSym
+
+test_proof2 = test_proof "proof that x + 0 = x" theorem_plus0 proof_plus0
+
+test_proof3 = test_proof "proof that x + S y = S (x + y)" theorem_plusSucc proof_plusSucc
 
 unitTests =
   testGroup
@@ -84,4 +107,4 @@ unitTests =
     [test_parse1, test_parse2, test_parse3,
      test_check1,
      test_reduce1, test_reduce2, test_reduce3,
-     test_proof1, test_proof2]
+     test_proof1, test_proof2, test_proof3]

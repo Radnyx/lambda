@@ -123,6 +123,8 @@ prove theorem = (fromJust . msum) $
     -- first hypothesis with provable subgoals
     (i, goals) <- msum $ (\(i, g) -> (i,) <$> g) <$> M.toList
       -- prove each sub-goal
+      -- BUG: doesn't exhaust EXACTLY n elements, this is because
+      --      each branch copies (n - cost) independently ...
       (M.map (\(as, cost, _) -> mapM (aux γ (n - cost)) as) $
       -- return type matches, won't exceed size limit
        M.filter (\(_, cost, σ) -> σ == τ && cost <= n) $

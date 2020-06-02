@@ -26,7 +26,9 @@
 	    |- T : *
 		|- () : T
 		|- F : *
-		|- F -> P
+		|- F -> P (just have, say, Explode F check to any type is needed? pass in type??)
+      - reduce in type check only if necessary?
+      	e.g. if fails to check, THEN reduce... idk
 
 
 	is uncountability of (nat -> nat) provable?
@@ -64,9 +66,7 @@ import Data.Char
 import Data.List
 import Control.Monad
 import Control.Applicative
-
-
-
+import Debug.Trace
 type Context = V.Vector Term
 
 data Term =
@@ -200,10 +200,10 @@ check = aux V.empty where
       guardMsg (p0t == expectP0) $ "natElim base case should prove " ++ show expectP0 ++ ", got " ++ show p0t ++ "."
       pSt <- reduce <$> aux ctx pS
       --let ctx' = V.cons Nat ctx -- bind variable from inductive step
-      let ih = reduce (App p (Var 0)) -- type of inductive hypothesis
+      let ih = App (addfree 1 p) (Var 0) -- type of inductive hypothesis
       --let ctx'' = V.cons ih ctx' -- bind I.H.
-      let indRes = reduce (App p (App Succ (Var 1))) -- result of inductive step
-      let expectPS = Pi Nat (Pi ih indRes)
+      let indRes = App (addfree 2 p) (App Succ (Var 1)) -- result of inductive step
+      let expectPS = reduce $ Pi Nat (Pi ih indRes)
       guardMsg (pSt == expectPS) $ "NatElim inductive step should prove " ++ show expectPS ++ ", got " ++ show pSt ++ "."
       return $ reduce (App p n)
     Equal a b -> do
@@ -236,11 +236,10 @@ reduce (Lam a t) = Lam a (reduce t)
 reduce (Pi t1 t2) = Pi (reduce t1) (reduce t2)
 reduce (NatElim p p0 pS n) =
     -- reduce folds recursively
-    let (p', p0', pS', n') = (reduce p, reduce p0, reduce pS, reduce n) in
-    case n' of
-      Zero -> p0'
-      App Succ m -> reduce $ App (App pS m) (reduce $ NatElim p' p0' pS' m)
-      _ -> NatElim p' p0' pS' n'
+    case reduce n of
+      Zero -> reduce p0
+      App Succ m -> reduce $ App (App pS m) (reduce $ NatElim p p0 pS m)
+      n' -> NatElim (reduce p) (reduce p0) (reduce pS) n'
 reduce (EqElim p x px y xy) = EqElim (reduce p) (reduce x) (reduce px) (reduce y) (reduce xy)
 reduce (Equal a b) = Equal (reduce a) (reduce b)
 reduce t = t
@@ -271,3 +270,5 @@ addfree :: Int -> Term -> Term
 addfree k = mapv f f where f _ i = Var (i + k)
 
 {- TODO: "free" with parameter for variable index (not just most recent binding) -}
+
+{- TODO: proof search ... -}
