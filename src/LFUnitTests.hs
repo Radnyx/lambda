@@ -1,10 +1,17 @@
 {-
   TODO:
-  - test proof of associativity of addition (should be easy)
   - test proof of distributivity of multiplication (annoying algebra ...)
   - test ackermann's function (compute modest values)
   - forall a b c, a < b -> b < c -> a < c where
   	lt x y := forall z, y + z = x -> False
+  - proofs involving divisibility:
+     let x | y := exists z : N, x * z = y
+     let coprime x y := forall u : N, u | x -> u | y -> u = 1
+    generalized euclid's lemma:
+     forall a b c : N, a | bc -> coprime a b -> a | c
+	
+
+    (general)
 -}
 
 module LFUnitTests (unitTests) where
@@ -28,7 +35,7 @@ theorem_eqSym :: Term
 theorem_eqSym = forceParse "forall n : N. forall m : N. forall _ : n = m. m = n"
 
 proof_eqSym :: Term
-proof_eqSym = forceParse "\\n : N. \\m : N. \\H : n = m. eqElim (\\x:N.x = n) n (refl n) m H"
+proof_eqSym = forceParse "\\n : N. \\m : N. \\H : n = m. eqElim (\\x:N.x = n) (refl n) H"
 
 theorem_plus0 :: Term
 theorem_plus0 = (reduce $ (App (forceParse
@@ -39,8 +46,8 @@ proof_plus0 = reduce $
   (App
     (forceParse $
       "\\plus:N->N->N. \\x:N. natElim (\\n:N. plus n 0 = n) (refl 0) " ++
-        "(\\n:N.\\H:(plus n 0 = n). eqElim (\\x:N. S (plus n 0) = S x) (plus n 0) " ++
-          "(refl (S (plus n 0))) n H) x")
+        "(\\n:N.\\H:(plus n 0 = n). eqElim (\\x:N. S (plus n 0) = S x)" ++
+          "(refl (S (plus n 0))) H) x")
     addition)
 
 theorem_plusSucc :: Term
@@ -53,20 +60,27 @@ proof_plusSucc = reduce $
     (forceParse $
       "\\plus:N->N->N. \\x:N.\\y:N. natElim (\\n:N. plus n (S y) = S (plus n y)) " ++
         " (refl (S y)) (\\n:N.\\H:(plus n (S y) = S (plus n y)). eqElim " ++
-          "(\\m:N. S (plus n (S y)) = S m) (plus n (S y)) (refl (S (plus n (S y)))) " ++
-            "(S (plus n y)) H) x")
+          "(\\m:N. S (plus n (S y)) = S m) (refl (S (plus n (S y)))) H) x")
     addition)
+
+theorem_lt0 :: Term
+theorem_lt0 = (reduce $ (App (forceParse
+  "\\plus:N->N->N. forall x : N. (forall z : N. plus 0 z = x -> F) -> F") addition))
+
+proof_lt0 :: Term
+proof_lt0 = (reduce $ (App (forceParse
+  "\\plus:N->N->N. \\x : N. \\H : (forall z : N. plus 0 z = x -> F). H x (refl x)") addition))
 
 test_parse1 =
   testCase "parse \"\\x : N. x\"" $ assertEqual []
     (Lam Nat (Var 0)) (forceParse "\\x : N. x")
 
 test_parse2 =
-  testCase "parse \"\\n:N.\\m:N.\\H:(n = m). eqElim (\\x:N.x = n) n (refl n) m H\"" $ assertEqual []
+  testCase "parse \"\\n:N.\\m:N.\\H:(n = m). eqElim (\\x:N.x = n) (refl n) H\"" $ assertEqual []
     (Lam Nat (Lam Nat (Lam (Equal (Var 1) (Var 0))
-      (EqElim (Lam Nat (Equal (Var 0) (Var 3))) (Var 2) (App Refl (Var 2)) (Var 1) (Var 0)))))
+      (EqElim (Lam Nat (Equal (Var 0) (Var 3))) (App Refl (Var 2)) (Var 0)))))
     (forceParse
-      "\\n:N.\\m:N.\\H:(n = m). eqElim (\\x:N.x = n) n (refl n) m H")
+      "\\n:N.\\m:N.\\H:(n = m). eqElim (\\x:N.x = n) (refl n) H")
 
 test_parse3 =
   testCase "parse \"\\f:(forall _:N. N).\\x:N.\\y:N.f x y\"" $ assertEqual []
@@ -101,10 +115,12 @@ test_proof2 = test_proof "proof that x + 0 = x" theorem_plus0 proof_plus0
 
 test_proof3 = test_proof "proof that x + S y = S (x + y)" theorem_plusSucc proof_plusSucc
 
+test_proof4 = test_proof "proof that x < 0 -> F" theorem_lt0 proof_lt0
+
 unitTests =
   testGroup
     "Logical Framework Lambda Calculus -- Unit Tests"
     [test_parse1, test_parse2, test_parse3,
      test_check1,
      test_reduce1, test_reduce2, test_reduce3,
-     test_proof1, test_proof2, test_proof3]
+     test_proof1, test_proof2, test_proof3, test_proof4]

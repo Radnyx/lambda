@@ -25,11 +25,9 @@
 	  - add categorical judgements (axioms):
 	    |- T : *
 		|- () : T
-		|- F : *
 		|- F -> P (just have, say, Explode F check to any type is needed? pass in type??)
       - reduce in type check only if necessary?
       	e.g. if fails to check, THEN reduce... idk
-
 
 	is uncountability of (nat -> nat) provable?
 	 how difficult is it to do so automatically?
@@ -80,7 +78,8 @@ data Term =
  | NatElim Term Term Term Term
  | Equal Term Term
  | Refl
- | EqElim Term Term Term Term Term
+ | EqElim Term Term Term
+ | Bottom
  | Univ
  deriving (Eq, Ord)
 
@@ -109,13 +108,14 @@ instance Show Term where
     aux k (Pi a t) = "forall " ++ name k 'a' ++ " : " ++ paren k a ++ ". " ++ aux (k + 1) t
     aux k (NatElim p p0 pS n) =
       unwords ["natElim", paren k p, paren k p0, paren k pS, paren k n]
-    aux k (EqElim p x px y xy) =
-      unwords ["eqElim", paren k p, paren k x, paren k px, paren k y, paren k xy]
+    aux k (EqElim p px xy) =
+      unwords ["eqElim", paren k p, paren k px, paren k xy]
     aux k (Equal a b) = aux k a ++ " = " ++ aux k b
     aux _ Nat = "N"
     aux _ Zero = "0"
     aux _ Succ = "S"
     aux _ Refl = "refl"
+    aux _ Bottom = "F"
     aux _ Univ = "*"
 
 data Check a = Success a | Failure String deriving (Show, Functor)
@@ -158,9 +158,9 @@ tryMotive t msg = do
     _ -> Failure $ msg ++ " motive " ++ show t ++ " must return a type, got " ++ show t1 ++ "."
 
 {- Term is x = y. -}
-tryEqual :: Term -> Term -> Term -> String -> Check ()
-tryEqual x y t msg = case t of
-  Equal x' y' -> guardMsg (x == x' && y == y') msg
+tryEqual :: Term -> String -> Check (Term, Term)
+tryEqual t msg = case t of
+  Equal x y -> return (x, y)
   _ -> Failure msg
 
 {- Term is application of function type. -}
@@ -183,7 +183,7 @@ check = aux V.empty where
       ft <- aux ctx f
       xt <- aux ctx x
       result <- tryFun f xt ft
-      return $ reduce (subst x result) -- subsitute in dependent type
+      return $ subst x result -- subsitute in dependent type
     (Lam Univ _) -> Failure "This is a first order theory, cannot quantify over types."
     (Lam t1 t2) -> Pi t1 <$> aux (V.cons t1 ctx) t2
     (Pi Univ _) -> Failure "This is a first order theory, cannot quantify over types."
@@ -197,13 +197,11 @@ check = aux V.empty where
       pt <- aux ctx p ; tryMotive pt "NatElim"
       p0t <- aux ctx p0
       let expectP0 = reduce (App p Zero)
-      guardMsg (p0t == expectP0) $ "natElim base case should prove " ++ show expectP0 ++ ", got " ++ show p0t ++ "."
-      pSt <- reduce <$> aux ctx pS
-      --let ctx' = V.cons Nat ctx -- bind variable from inductive step
+      guardMsg (p0t == expectP0) $ "NatElim base case should prove " ++ show expectP0 ++ ", got " ++ show p0t ++ "."
+      pSt <- aux ctx pS
       let ih = App (addfree 1 p) (Var 0) -- type of inductive hypothesis
-      --let ctx'' = V.cons ih ctx' -- bind I.H.
       let indRes = App (addfree 2 p) (App Succ (Var 1)) -- result of inductive step
-      let expectPS = reduce $ Pi Nat (Pi ih indRes)
+      let expectPS = reduce $ Pi Nat (Pi ih indRes) -- forall x, P x -> P (S x)
       guardMsg (pSt == expectPS) $ "NatElim inductive step should prove " ++ show expectPS ++ ", got " ++ show pSt ++ "."
       return $ reduce (App p n)
     Equal a b -> do
@@ -211,36 +209,34 @@ check = aux V.empty where
       bt <- aux ctx b ; tryNat bt $ "RHS of `=` must be Nat, got " ++ show bt ++ "."
       return Univ -- Γ, a : ℕ, b : ℕ |- a = b : *
     Refl -> return $ Pi Nat (Equal (Var 0) (Var 0))
-    EqElim p x px y xy -> do
-      xt <- aux ctx x ; tryNat xt $ "Second arg of EqElim must be Nat, got " ++ show xt ++ "."
-      yt <- aux ctx y ; tryNat yt $ "Fourth arg of EqElim must be Nat, got " ++ show yt ++ "."
+    EqElim p px xy -> do
       pt <- aux ctx p ; tryMotive pt "EqElim"
-      xyt <- reduce <$> aux ctx xy
-      tryEqual x y xyt -- has type x = y
-        $ "Final argument to EqElim must have type " ++ show x ++ " = " ++ show y ++ ", got " ++ show xyt ++ "."
+      xyt <- aux ctx xy
+      (x, y) <- tryEqual xyt "Final argument to EqElim must be proof of equality."
       pxt <- aux ctx px
       let expectPx = reduce (App p x) -- actually has type P x
       guardMsg (pxt == expectPx) $ "Expected proof of EqElim motive " ++ show expectPx ++ ", got " ++ show pxt ++ "."
       return $ reduce (App p y)
+    Bottom -> return Univ
     Univ -> Failure "This is a first order theory, universe has no type."
 
 {- Reduce term to normal form. -}
 reduce :: Term -> Term
 reduce (App t1 t2) =
-  case (reduce t1, reduce t2) of
+  case reduce t1 of
     -- β reduction
-    (Lam _ t1', t2') -> reduce $ subst t2' t1'
-    (      t1', t2') -> App t1' t2'
+    Lam _ t1' -> reduce $ subst t2 t1'
+    t1' -> App t1' (reduce t2)
 -- TODO: eta reduction
-reduce (Lam a t) = Lam a (reduce t)
+reduce (Lam a t) = Lam (reduce a) (reduce t)
 reduce (Pi t1 t2) = Pi (reduce t1) (reduce t2)
 reduce (NatElim p p0 pS n) =
     -- reduce folds recursively
-    case reduce n of
+    case n of
       Zero -> reduce p0
-      App Succ m -> reduce $ App (App pS m) (reduce $ NatElim p p0 pS m)
-      n' -> NatElim (reduce p) (reduce p0) (reduce pS) n'
-reduce (EqElim p x px y xy) = EqElim (reduce p) (reduce x) (reduce px) (reduce y) (reduce xy)
+      App Succ m -> reduce $ App (App pS m) (NatElim p p0 pS m)
+      _ -> NatElim (reduce p) (reduce p0) (reduce pS) n -- prob reduce n in future
+reduce (EqElim p px xy) = EqElim (reduce p) (reduce px) (reduce xy)
 reduce (Equal a b) = Equal (reduce a) (reduce b)
 reduce t = t
 
@@ -258,7 +254,7 @@ mapv f g = aux 0 where
       | otherwise -> v
     (NatElim p p0 pS n) -> NatElim (aux d p) (aux d p0) (aux d pS) (aux d n)
     (Equal a b) -> Equal (aux d a) (aux d b)
-    (EqElim p x px y xy) -> EqElim (aux d p) (aux d x) (aux d px) (aux d y) (aux d xy)
+    (EqElim p px xy) -> EqElim (aux d p) (aux d px) (aux d xy)
     t' -> t'
 
 {- Substitute latest binding with term t. -}
